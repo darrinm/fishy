@@ -113,6 +113,32 @@
       color: var(--text-secondary);
     }
 
+    .history-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .history-item-delete {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      padding: 0.25rem;
+      font-size: 0.875rem;
+      line-height: 1;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+
+    .history-item:hover .history-item-delete {
+      opacity: 1;
+    }
+
+    .history-item-delete:hover {
+      color: var(--error);
+    }
+
     .clear-btn {
       width: 100%;
       padding: 0.5rem;
@@ -1449,7 +1475,10 @@
             })
             .map(a => `
             <div class="history-item" data-id="${a.id}" onclick="loadAnalysis('${a.id}')">
-              <div class="history-item-name">${a.video.split('/').pop()}</div>
+              <div class="history-item-header">
+                <div class="history-item-name">${a.video.split('/').pop()}</div>
+                <button class="history-item-delete" onclick="event.stopPropagation(); deleteAnalysisWithConfirm('${a.id}', '${a.video.split('/').pop().replace(/'/g, "\\'")}')" title="Delete analysis">🗑</button>
+              </div>
               <div class="history-item-meta">
                 ${new Date(a.analyzedAt).toLocaleDateString()} &bull;
                 ${a.identifiedSpecies.length} species
@@ -2380,6 +2409,32 @@
         lightboxNext();
       }
     });
+
+    // Delete single analysis
+    async function deleteAnalysisWithConfirm(id, videoName) {
+      if (!confirm(`Delete "${videoName}" and all its frames?\n\nThis will also delete the video file and cannot be undone.`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/history/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to delete');
+
+        // Refresh UI
+        await loadHistory();
+        await loadAggregatedSpecies();
+        await loadStarredFrames();
+
+        // Clear results if we just deleted the currently displayed analysis
+        if (currentResult && currentResult.id === id) {
+          currentResult = null;
+          resultsSection.classList.remove('visible');
+          timelineSection.classList.remove('visible');
+        }
+      } catch (err) {
+        showError('Failed to delete analysis');
+      }
+    }
 
     // Clear history
     clearHistoryBtn.addEventListener('click', async () => {

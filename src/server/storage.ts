@@ -1,12 +1,14 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import type { FishFinderResult, BoundingBox } from '../types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '../../data');
+const UPLOADS_DIR = join(DATA_DIR, 'uploads');
+const FRAMES_DIR = join(__dirname, '../../frames');
 const HISTORY_FILE = join(DATA_DIR, 'history.json');
 const STARRED_FILE = join(DATA_DIR, 'starred.json');
 const ROTATIONS_FILE = join(DATA_DIR, 'rotations.json');
@@ -78,6 +80,59 @@ export async function deleteAnalysis(id: string): Promise<boolean> {
     return false;
   }
 
+  const analysis = history.analyses[index];
+
+  // Collect all frame filenames from this analysis
+  const frameFilenames: string[] = [];
+  for (const species of analysis.identifiedSpecies) {
+    if (species.frameFiles) {
+      for (const framePath of species.frameFiles) {
+        frameFilenames.push(basename(framePath));
+      }
+    }
+  }
+
+  // Delete starred frames that match
+  const starred = await readStarred();
+  starred.frames = starred.frames.filter(f => !frameFilenames.includes(f.filename));
+  await writeStarred(starred);
+
+  // Delete rotations for matching frames
+  const rotations = await readRotations();
+  for (const filename of frameFilenames) {
+    delete rotations.rotations[filename];
+  }
+  await writeRotations(rotations);
+
+  // Delete bounding boxes for matching frames
+  const boundingBoxes = await readBoundingBoxes();
+  for (const filename of frameFilenames) {
+    delete boundingBoxes.boxes[filename];
+  }
+  await writeBoundingBoxes(boundingBoxes);
+
+  // Delete the video file if it exists
+  if (analysis.videoPath) {
+    const videoFilename = basename(analysis.videoPath);
+    const videoPath = join(UPLOADS_DIR, videoFilename);
+    try {
+      await unlink(videoPath);
+    } catch {
+      // File may not exist, ignore
+    }
+  }
+
+  // Delete frame files
+  for (const filename of frameFilenames) {
+    const framePath = join(FRAMES_DIR, filename);
+    try {
+      await unlink(framePath);
+    } catch {
+      // File may not exist, ignore
+    }
+  }
+
+  // Remove from history
   history.analyses.splice(index, 1);
   await writeHistory(history);
   return true;
