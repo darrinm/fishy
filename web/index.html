@@ -767,6 +767,23 @@
       color: var(--success);
     }
 
+    .lightbox-play {
+      position: absolute;
+      top: 1rem;
+      right: 14rem;
+      background: none;
+      border: none;
+      color: #888;
+      padding: 0.5rem;
+      cursor: pointer;
+      font-size: 1.5rem;
+      line-height: 1;
+    }
+
+    .lightbox-play:hover {
+      color: var(--accent);
+    }
+
     /* Bounding box container */
     .lightbox-image-container {
       position: relative;
@@ -1222,6 +1239,7 @@
   <!-- Lightbox -->
   <div class="lightbox" id="lightbox">
     <div class="lightbox-header" id="lightboxHeader"></div>
+    <button class="lightbox-play" id="lightboxPlay" onclick="playVideoFromFrame()" title="Play video from this frame">▶</button>
     <button class="lightbox-detect" id="lightboxDetect" onclick="detectCurrentBoundingBoxes()" title="Detect species location">📍</button>
     <button class="lightbox-rotate" onclick="rotateCurrentFrame()">⟳</button>
     <button class="lightbox-star" id="lightboxStar" onclick="toggleLightboxStar()">☆</button>
@@ -1230,6 +1248,7 @@
     <button class="lightbox-nav lightbox-prev" id="lightboxPrev" onclick="lightboxPrev()">&#8249;</button>
     <div class="lightbox-image-container" id="lightboxImageContainer" onclick="toggleBoundingBoxVisibility()">
       <img id="lightboxImg" src="" alt="Full size frame">
+      <video id="lightboxVideo" controls style="display: none; max-width: 90vw; max-height: 85vh;"></video>
     </div>
     <button class="lightbox-nav lightbox-next" id="lightboxNext" onclick="lightboxNext()">&#8250;</button>
     <div class="lightbox-counter" id="lightboxCounter">1 / 1</div>
@@ -1860,6 +1879,7 @@
       updateLightboxNav();
       renderBoundingBoxes(filename);
       updateDetectButtonState(filename);
+      updatePlayButtonState(filename);
     }
 
     function closeLightbox() {
@@ -1870,6 +1890,15 @@
       const container = document.getElementById('lightboxImageContainer');
       container.querySelectorAll('.bounding-box').forEach(el => el.remove());
       container.style.transform = '';
+      // Reset video mode
+      const video = document.getElementById('lightboxVideo');
+      const img = document.getElementById('lightboxImg');
+      video.pause();
+      video.src = '';
+      video.style.display = 'none';
+      img.style.display = 'block';
+      document.getElementById('lightboxPlay').textContent = '▶';
+      lightboxVideoMode = false;
     }
 
     function openLightboxStarred(idx) {
@@ -1877,9 +1906,22 @@
       openLightbox(window.currentStarredFrames[idx], window.currentStarredFrames, idx, title);
     }
 
+    function resetLightboxVideoMode() {
+      if (lightboxVideoMode) {
+        const video = document.getElementById('lightboxVideo');
+        const img = document.getElementById('lightboxImg');
+        video.pause();
+        video.style.display = 'none';
+        img.style.display = 'block';
+        document.getElementById('lightboxPlay').textContent = '▶';
+        lightboxVideoMode = false;
+      }
+    }
+
     function lightboxPrev() {
       if (lightboxFrames.length > 1 && lightboxIndex > 0) {
         lightboxIndex--;
+        resetLightboxVideoMode();
         // Reset visibility for new frame
         document.getElementById('lightboxImageContainer').classList.remove('boxes-hidden');
         updateLightboxImage();
@@ -1890,6 +1932,7 @@
     function lightboxNext() {
       if (lightboxFrames.length > 1 && lightboxIndex < lightboxFrames.length - 1) {
         lightboxIndex++;
+        resetLightboxVideoMode();
         // Reset visibility for new frame
         document.getElementById('lightboxImageContainer').classList.remove('boxes-hidden');
         updateLightboxImage();
@@ -2034,6 +2077,7 @@
       img.style.transform = '';
       renderBoundingBoxes(filename);
       updateDetectButtonState(filename);
+      updatePlayButtonState(filename);
     }
 
     // Render bounding boxes on the lightbox image
@@ -2107,6 +2151,27 @@
       btn.textContent = hasBoxes ? '✓' : '📍';
     }
 
+    // Update play button visibility based on whether video exists
+    async function updatePlayButtonState(filename) {
+      const btn = document.getElementById('lightboxPlay');
+
+      // Check if we can find an analysis with video for this frame
+      try {
+        const res = await fetch('/api/history');
+        const data = await res.json();
+
+        const analysis = data.analyses.find(a =>
+          a.videoPath && a.identifiedSpecies?.some(s =>
+            s.frameFiles?.some(f => f.endsWith(filename))
+          )
+        );
+
+        btn.style.display = analysis ? 'block' : 'none';
+      } catch (err) {
+        btn.style.display = 'none';
+      }
+    }
+
     // Toggle bounding box visibility on click
     function toggleBoundingBoxVisibility() {
       const container = document.getElementById('lightboxImageContainer');
@@ -2141,6 +2206,83 @@
         setTimeout(() => updateDetectButtonState(filename), 1500);
       } finally {
         btn.disabled = false;
+      }
+    }
+
+    // State for lightbox video mode
+    let lightboxVideoMode = false;
+
+    // Play video from current frame's timestamp (in lightbox)
+    async function playVideoFromFrame() {
+      const currentSrc = lightboxFrames[lightboxIndex];
+      if (!currentSrc) return;
+
+      const filename = currentSrc.split('/').pop();
+      const img = document.getElementById('lightboxImg');
+      const video = document.getElementById('lightboxVideo');
+      const playBtn = document.getElementById('lightboxPlay');
+
+      // If already showing video, toggle back to image
+      if (lightboxVideoMode) {
+        video.pause();
+        video.style.display = 'none';
+        img.style.display = 'block';
+        playBtn.textContent = '▶';
+        playBtn.title = 'Play video from this frame';
+        lightboxVideoMode = false;
+        // Restore bounding boxes visibility
+        document.getElementById('lightboxImageContainer').classList.remove('boxes-hidden');
+        return;
+      }
+
+      // Parse timestamp from filename: {uuid}_{species}_{timestamp}s.jpg
+      const tsMatch = filename.match(/_(\d+)s\.jpg$/i);
+      if (!tsMatch) {
+        console.error('Could not parse timestamp from frame filename:', filename);
+        return;
+      }
+      const timestamp = parseInt(tsMatch[1], 10);
+
+      // Find the analysis that contains this frame
+      try {
+        const res = await fetch('/api/history');
+        const data = await res.json();
+
+        const analysis = data.analyses.find(a =>
+          a.videoPath && a.identifiedSpecies?.some(s =>
+            s.frameFiles?.some(f => f.endsWith(filename))
+          )
+        );
+
+        if (!analysis || !analysis.videoPath) {
+          console.error('Could not find analysis with video for frame:', filename);
+          return;
+        }
+
+        // Switch to video mode
+        lightboxVideoMode = true;
+        playBtn.textContent = '🖼';
+        playBtn.title = 'Back to frame';
+
+        // Hide image and bounding boxes, show video
+        img.style.display = 'none';
+        video.style.display = 'block';
+        video.src = analysis.videoPath;
+        document.getElementById('lightboxImageContainer').classList.add('boxes-hidden');
+
+        // Seek and play when ready
+        const seekAndPlay = () => {
+          video.currentTime = timestamp;
+          video.play();
+        };
+
+        if (video.readyState >= 1) {
+          seekAndPlay();
+        } else {
+          video.addEventListener('loadedmetadata', seekAndPlay, { once: true });
+        }
+      } catch (err) {
+        console.error('Failed to play video from frame:', err);
       }
     }
 
