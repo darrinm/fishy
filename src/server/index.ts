@@ -36,7 +36,7 @@ app.get('*', (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Fish Finder server running at http://localhost:${PORT}`);
+  console.log(`Fishy server running at http://localhost:${PORT}`);
   console.log(`Serving web UI from: ${webDir}`);
   console.log(`Frames directory: ${framesDir}`);
 });

@@ -1,4 +1,4 @@
-# Fish Finder - Claude Code Notes
+# Fishy - Claude Code Notes
 
 ## Running the Application
 
