@@ -1,6 +1,6 @@
 # Fish Finder
 
-AI-powered marine species identifier for diving videos. Upload your underwater footage and get detailed species identification with timestamps, habitat info, and extracted frames.
+AI-powered marine species identifier for diving videos. Upload your underwater footage and get detailed species identification with timestamps, habitat info, and extracted frames. The best models (Gemini 3 Pro and Gemini 3 Flash) are still not great at identifying marine life therefore this project is best used as a first pass to identify potential species and then manually review the results.
 
 ![Fish Finder UI](https://img.shields.io/badge/status-beta-blue)
 
