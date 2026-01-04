@@ -5,9 +5,5 @@ npm-debug.log
 .env
 *.md
 .DS_Store
-src
-tsconfig.json
-*.ts
-!dist/**/*.js
 data/uploads/*
 frames/*
