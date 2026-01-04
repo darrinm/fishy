@@ -22,7 +22,7 @@ export function getClient(): GoogleGenAI {
 export async function uploadVideo(
   filePath: string,
   verbose: boolean = false
-): Promise<{ uri: string; mimeType: string }> {
+): Promise<{ uri: string; mimeType: string; fileName: string }> {
   const ai = getClient();
 
   // Get file size for progress info
@@ -68,7 +68,7 @@ export async function uploadVideo(
     // Poll until file is ACTIVE
     const processedFile = await waitForFileActive(file.name, verbose);
 
-    return { uri: processedFile.uri!, mimeType: processedFile.mimeType! };
+    return { uri: processedFile.uri!, mimeType: processedFile.mimeType!, fileName: file.name };
   } catch (error) {
     if (progressInterval) {
       clearInterval(progressInterval);
@@ -207,6 +207,66 @@ function getMimeType(filePath: string): string {
   };
 
   return mimeTypes[ext || ''] || 'video/mp4';
+}
+
+// File management functions
+
+export interface GeminiFile {
+  name: string;
+  displayName?: string;
+  mimeType?: string;
+  sizeBytes?: string;
+  createTime?: string;
+  expirationTime?: string;
+  state?: string;
+  uri?: string;
+}
+
+export async function listFiles(): Promise<GeminiFile[]> {
+  const ai = getClient();
+  const files: GeminiFile[] = [];
+
+  try {
+    const response = await ai.files.list();
+    for await (const file of response) {
+      files.push(file as GeminiFile);
+    }
+  } catch (error) {
+    console.error('Failed to list Gemini files:', error);
+  }
+
+  return files;
+}
+
+export async function deleteFile(fileName: string): Promise<boolean> {
+  const ai = getClient();
+
+  try {
+    await ai.files.delete({ name: fileName });
+    return true;
+  } catch (error) {
+    console.error(`Failed to delete Gemini file ${fileName}:`, error);
+    return false;
+  }
+}
+
+export async function deleteAllFiles(): Promise<{ deleted: number; failed: number }> {
+  const files = await listFiles();
+  let deleted = 0;
+  let failed = 0;
+
+  for (const file of files) {
+    if (file.name) {
+      const success = await deleteFile(file.name);
+      if (success) {
+        deleted++;
+      } else {
+        failed++;
+      }
+    }
+  }
+
+  return { deleted, failed };
 }
 
 export async function detectBoundingBoxes(

@@ -1395,7 +1395,8 @@
             const style = rot ? `style="transform: rotate(${rot}deg)"` : '';
             return `
               <div class="starred-frame" title="${f.speciesName}">
-                <img src="/frames/${f.filename}" onclick="openLightboxStarred(${idx})" alt="${f.speciesName}" ${style}>
+                <img src="/thumbs/${f.filename}" onclick="openLightboxStarred(${idx})" alt="${f.speciesName}" ${style}
+                     onerror="this.src='/frames/${f.filename}'">
               </div>
             `;
           }).join('');
@@ -1737,9 +1738,9 @@
                       onclick="event.stopPropagation(); toggleStar('${filename}', '${species.commonName.replace(/'/g, "\\'")}', '${videoName.replace(/'/g, "\\'")}', ${ts}, this)">
                 ${isStarred ? '★' : '☆'}
               </button>
-              <img src="/frames/${filename}" class="frame-thumb" style="${rotStyle}"
+              <img src="/thumbs/${filename}" class="frame-thumb" style="${rotStyle}"
                    onclick="openLightbox('/frames/${filename}', window['${framesKey}'], ${idx}, '${species.commonName.replace(/'/g, "\\'")}')"
-                   onerror="this.parentElement.style.display='none'"
+                   onerror="this.src='/frames/${filename}'; this.onerror=()=>this.parentElement.style.display='none'"
                    alt="Frame">
             </div>`;
         }).join('') || '';

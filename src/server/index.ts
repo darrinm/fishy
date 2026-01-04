@@ -22,6 +22,10 @@ app.use('/api', apiRouter);
 const framesDir = join(__dirname, '../../frames');
 app.use('/frames', express.static(framesDir));
 
+// Serve thumbnails (smaller versions of frames for grid view)
+const thumbsDir = join(framesDir, 'thumbs');
+app.use('/thumbs', express.static(thumbsDir));
+
 // Serve uploaded videos for playback
 const uploadsDir = join(__dirname, '../../data/uploads');
 app.use('/uploads', express.static(uploadsDir));

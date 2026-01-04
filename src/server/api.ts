@@ -6,7 +6,7 @@ import { rm } from 'node:fs/promises';
 import multer from 'multer';
 
 import { MODEL_ALIASES } from '../models.js';
-import { getVideoFiles, getVideosWithMetadata } from '../video.js';
+import { getVideoFiles, getVideosWithMetadata, createThumbnail } from '../video.js';
 import { analyzeVideoFile } from '../analyzer.js';
 import { jobManager } from './progress.js';
 import {
@@ -24,7 +24,7 @@ import {
   getAllBoundingBoxes,
   saveBoundingBoxes,
 } from './storage.js';
-import { detectBoundingBoxes } from '../gemini.js';
+import { detectBoundingBoxes, listFiles, deleteAllFiles } from '../gemini.js';
 import type { AnalyzeOptions, Provider } from '../types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -796,5 +796,96 @@ router.delete('/batch/:batchId', (req: Request, res: Response) => {
     } else {
       res.status(400).json({ error: `Cannot cancel batch in ${batch.status} state` });
     }
+  }
+});
+
+// ============ GEMINI FILE MANAGEMENT ============
+
+// GET /api/gemini/files - List all files stored in Gemini
+router.get('/gemini/files', async (_req: Request, res: Response) => {
+  try {
+    const files = await listFiles();
+    const totalBytes = files.reduce((sum, f) => sum + (parseInt(f.sizeBytes || '0', 10) || 0), 0);
+    res.json({
+      files,
+      count: files.length,
+      totalBytes,
+      totalMB: (totalBytes / (1024 * 1024)).toFixed(2),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: message });
+  }
+});
+
+// DELETE /api/gemini/files - Delete all files stored in Gemini
+router.delete('/gemini/files', async (_req: Request, res: Response) => {
+  try {
+    const result = await deleteAllFiles();
+    res.json({
+      success: true,
+      deleted: result.deleted,
+      failed: result.failed,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: message });
+  }
+});
+
+// ============ THUMBNAIL MIGRATION ============
+
+// POST /api/migrate/thumbnails - Generate thumbnails for existing frames
+router.post('/migrate/thumbnails', async (_req: Request, res: Response) => {
+  try {
+    const { readdir, mkdir, access } = await import('node:fs/promises');
+    const { constants } = await import('node:fs');
+
+    const framesDir = join(__dirname, '../../frames');
+    const thumbsDir = join(framesDir, 'thumbs');
+
+    // Ensure thumbs directory exists
+    await mkdir(thumbsDir, { recursive: true });
+
+    // Get all frame files (excluding thumbs subdirectory)
+    const files = await readdir(framesDir);
+    const frameFiles = files.filter(f => f.endsWith('.jpg') && !f.startsWith('.'));
+
+    let generated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const filename of frameFiles) {
+      const thumbPath = join(thumbsDir, filename);
+
+      // Check if thumbnail already exists
+      try {
+        await access(thumbPath, constants.F_OK);
+        skipped++;
+        continue;
+      } catch {
+        // Thumbnail doesn't exist, create it
+      }
+
+      try {
+        const sourcePath = join(framesDir, filename);
+        await createThumbnail(sourcePath, thumbsDir);
+        generated++;
+      } catch (error) {
+        console.error(`Failed to create thumbnail for ${filename}:`, error);
+        failed++;
+      }
+    }
+
+    res.json({
+      success: true,
+      total: frameFiles.length,
+      generated,
+      skipped,
+      failed,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: message });
   }
 });

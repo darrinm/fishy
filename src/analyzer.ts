@@ -1,7 +1,8 @@
 import { mkdir } from 'node:fs/promises';
-import { uploadVideo, analyzeVideo } from './gemini.js';
+import { uploadVideo, analyzeVideo, deleteFile } from './gemini.js';
 import { analyzeWithOpenAI } from './openai.js';
-import { extractFrame, extractFramesAsBase64, checkFfmpeg } from './video.js';
+import { extractFrame, extractFramesAsBase64, checkFfmpeg, createThumbnail } from './video.js';
+import { join } from 'node:path';
 import type { FishFinderResult, IdentifiedSpecies, AnalyzeOptions, GeminiAnalysisResponse, AnalysisTiming } from './types.js';
 
 interface AnalysisWithTiming {
@@ -63,12 +64,21 @@ async function analyzeWithGeminiProvider(
 
   // Upload video to Gemini
   const uploadStart = Date.now();
-  const { uri, mimeType } = await uploadVideo(videoPath, verbose);
+  const { uri, mimeType, fileName } = await uploadVideo(videoPath, verbose);
   const uploadMs = Date.now() - uploadStart;
 
   // Analyze with Gemini
   const analysisStart = Date.now();
-  const analysis = await analyzeVideo(uri, mimeType, model, verbose, fps);
+  let analysis: GeminiAnalysisResponse;
+  try {
+    analysis = await analyzeVideo(uri, mimeType, model, verbose, fps);
+  } finally {
+    // Always clean up the uploaded file from Gemini to free quota
+    if (verbose) {
+      console.log('Cleaning up uploaded file from Gemini...');
+    }
+    await deleteFile(fileName);
+  }
   const analysisMs = Date.now() - analysisStart;
 
   return {
@@ -118,6 +128,10 @@ async function extractSpeciesFrames(
 
   await mkdir(extractFrames, { recursive: true });
 
+  // Create thumbs subdirectory for thumbnails
+  const thumbsDir = join(extractFrames, 'thumbs');
+  await mkdir(thumbsDir, { recursive: true });
+
   for (const species of identifiedSpecies) {
     if (species.timestamps.length === 0) continue;
 
@@ -137,6 +151,15 @@ async function extractSpeciesFrames(
             species.commonName
           );
           frameFiles.push(framePath);
+
+          // Create thumbnail for the extracted frame
+          try {
+            await createThumbnail(framePath, thumbsDir);
+          } catch (thumbError) {
+            if (verbose) {
+              console.warn(`Failed to create thumbnail for ${framePath}:`, thumbError);
+            }
+          }
         } catch (error) {
           if (verbose) {
             console.warn(`Failed to extract frame at ${sec}s for ${species.commonName}:`, error);

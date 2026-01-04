@@ -144,6 +144,22 @@ export async function getVideoDuration(videoPath: string): Promise<number> {
   }
 }
 
+export async function createThumbnail(
+  sourcePath: string,
+  thumbsDir: string
+): Promise<string> {
+  const filename = basename(sourcePath);
+  const thumbPath = join(thumbsDir, filename);
+
+  // Create 500x300 thumbnail (2x of 250x150 display size for retina)
+  await execAsync(
+    `ffmpeg -i "${sourcePath}" -vf "scale=500:300:force_original_aspect_ratio=increase,crop=500:300" -q:v 3 "${thumbPath}" -y 2>/dev/null`,
+    { timeout: 10000 }
+  );
+
+  return thumbPath;
+}
+
 export async function extractFramesAsBase64(
   videoPath: string,
   fps: number,
