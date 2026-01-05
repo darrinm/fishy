@@ -35,7 +35,7 @@ export async function analyzeVideoFile(
   // Extract frames if requested
   let frameExtractionMs: number | undefined;
   if (options.extractFrames && identifiedSpecies.length > 0) {
-    onProgress?.('saving-frames', 'Saving frames');
+    onProgress?.('saving-frames', 'Extracting frames');
     const frameStart = Date.now();
     await extractSpeciesFrames(videoPath, identifiedSpecies, options);
     frameExtractionMs = Date.now() - frameStart;

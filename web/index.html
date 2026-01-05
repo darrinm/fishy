@@ -1299,6 +1299,14 @@
     .batch-video-item.processing {
       border: 1px solid var(--accent);
     }
+
+    .batch-video-item.completed {
+      cursor: pointer;
+    }
+
+    .batch-video-item.completed:hover {
+      background: var(--bg-secondary);
+    }
   </style>
 </head>
 <body>
@@ -1983,13 +1991,17 @@
 
       es.addEventListener('progress', (e) => {
         const data = JSON.parse(e.data);
-        activeJobs.get(filename).status = 'processing';
-        updateQueueItemStatus(filename, 'processing', data.message);
+        // Use 'queued' status when waiting, 'processing' when actively analyzing
+        const status = data.message === 'Queued' ? 'queued' : 'processing';
+        activeJobs.get(filename).status = status;
+        updateQueueItemStatus(filename, status, data.message);
       });
 
       es.addEventListener('complete', async (e) => {
         const data = JSON.parse(e.data);
-        activeJobs.get(filename).status = 'completed';
+        const job = activeJobs.get(filename);
+        job.status = 'completed';
+        job.result = data.result;
         es.close();
 
         const speciesCount = data.result?.identifiedSpecies?.length || 0;
@@ -2041,7 +2053,7 @@
       const durationStr = formatDuration(duration);
       const sizeStr = formatFileSize(size);
       const html = `
-        <div class="batch-video-item ${status}" data-name="${name}">
+        <div class="batch-video-item ${status}" data-name="${name}" onclick="showQueueItemResult('${name.replace(/'/g, "\\'")}')">
           <span class="batch-video-status"></span>
           <span class="batch-video-info">
             <span class="batch-video-name" title="${name}">${name}</span>
@@ -2052,6 +2064,16 @@
       `;
       queueList.insertAdjacentHTML('beforeend', html);
     }
+
+    // Show results for a completed queue item
+    function showQueueItemResult(name) {
+      const job = activeJobs.get(name);
+      if (job && job.status === 'completed' && job.result) {
+        currentResult = job.result;
+        displayResults(job.result);
+      }
+    }
+    window.showQueueItemResult = showQueueItemResult;
 
     // Update queue item status
     function updateQueueItemStatus(name, status, message) {
@@ -2212,7 +2234,7 @@
         items.push({ value: formatMs(timing.analysisMs), label: 'AI Analysis' });
       }
       if (timing.frameExtractionMs) {
-        items.push({ value: formatMs(timing.frameExtractionMs), label: 'Save Frames' });
+        items.push({ value: formatMs(timing.frameExtractionMs), label: 'Frame Extraction' });
       }
       if (timing.totalMs) {
         items.push({ value: formatMs(timing.totalMs), label: 'Total' });
