@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { uploadVideo, analyzeVideo, deleteFile } from './gemini.js';
 import { analyzeWithOpenAI } from './openai.js';
-import { extractFrame, extractFramesAsBase64, checkFfmpeg, createThumbnail, getVideoDuration } from './video.js';
+import { extractFrame, extractFramesAsBase64, checkFfmpeg, getVideoDuration } from './video.js';
 import { join } from 'node:path';
 import type { FishFinderResult, IdentifiedSpecies, AnalyzeOptions, GeminiAnalysisResponse, AnalysisTiming, AnalysisStage } from './types.js';
 
@@ -96,7 +96,14 @@ async function analyzeWithGeminiProvider(
     analysis.video_duration_seconds = actualDuration;
     // If reported duration is way off, likely hallucinated - return empty results
     if (reportedDuration > actualDuration * 3 || reportedDuration < actualDuration * 0.3) {
-      console.error(`Gemini hallucination detected - clearing invalid results`);
+      console.error(`Gemini hallucination detected - clearing invalid results`, {
+        video: videoPath,
+        actualDuration: actualDuration.toFixed(1),
+        reportedDuration,
+        speciesCount: analysis.species.length,
+        species: analysis.species.map(s => s.common_name),
+        summary: analysis.summary,
+      });
       analysis.species = [];
       analysis.summary = 'Analysis failed: AI returned invalid results for this video.';
     }
@@ -156,46 +163,60 @@ async function extractSpeciesFrames(
   const thumbsDir = join(extractFrames, 'thumbs');
   await mkdir(thumbsDir, { recursive: true });
 
+  // Collect all unique timestamps needed across all species
+  const timestampToSpecies = new Map<number, IdentifiedSpecies[]>();
   for (const species of identifiedSpecies) {
-    if (species.timestamps.length === 0) continue;
-
-    const frameFiles: string[] = [];
-
-    // Extract 1 frame per second over all intervals
     for (const interval of species.timestamps) {
       const start = Math.floor(interval.start);
       const end = Math.floor(interval.end);
-
       for (let sec = start; sec <= end; sec++) {
-        try {
-          const framePath = await extractFrame(
-            videoPath,
-            sec,
-            extractFrames,
-            species.commonName
-          );
-          frameFiles.push(framePath);
+        if (!timestampToSpecies.has(sec)) {
+          timestampToSpecies.set(sec, []);
+        }
+        timestampToSpecies.get(sec)!.push(species);
+      }
+    }
+  }
 
-          // Create thumbnail for the extracted frame
-          try {
-            await createThumbnail(framePath, thumbsDir);
-          } catch (thumbError) {
-            if (verbose) {
-              console.warn(`Failed to create thumbnail for ${framePath}:`, thumbError);
-            }
-          }
-        } catch (error) {
-          if (verbose) {
-            console.warn(`Failed to extract frame at ${sec}s for ${species.commonName}:`, error);
-          }
+  // Extract each unique timestamp once, assign to all species that need it
+  const extractedFrames = new Map<number, string>();
+
+  for (const [sec, speciesList] of timestampToSpecies) {
+    // Use first species name for filename (arbitrary but consistent)
+    const primarySpecies = speciesList[0];
+    try {
+      const framePath = await extractFrame(
+        videoPath,
+        sec,
+        extractFrames,
+        primarySpecies.commonName,
+        thumbsDir
+      );
+      extractedFrames.set(sec, framePath);
+    } catch (error) {
+      if (verbose) {
+        console.warn(`Failed to extract frame at ${sec}s:`, error);
+      }
+    }
+  }
+
+  // Assign extracted frames to each species
+  for (const species of identifiedSpecies) {
+    const frameFiles: string[] = [];
+    for (const interval of species.timestamps) {
+      const start = Math.floor(interval.start);
+      const end = Math.floor(interval.end);
+      for (let sec = start; sec <= end; sec++) {
+        const framePath = extractedFrames.get(sec);
+        if (framePath) {
+          frameFiles.push(framePath);
         }
       }
     }
-
     if (frameFiles.length > 0) {
       species.frameFiles = frameFiles;
       if (verbose) {
-        console.log(`Extracted ${frameFiles.length} frames for ${species.commonName}`);
+        console.log(`Assigned ${frameFiles.length} frames to ${species.commonName}`);
       }
     }
   }

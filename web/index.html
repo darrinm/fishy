@@ -2081,11 +2081,6 @@
       if (item) {
         item.className = `batch-video-item ${status}`;
         item.querySelector('.batch-video-progress').textContent = message || '';
-
-        // Auto-scroll to keep current item visible when processing
-        if (status === 'processing') {
-          item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
       }
 
       // Show/hide clear button based on completed items

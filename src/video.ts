@@ -103,20 +103,33 @@ export async function extractFrame(
   videoPath: string,
   timestampSeconds: number,
   outputDir: string,
-  speciesName: string
+  speciesName: string,
+  thumbsDir?: string
 ): Promise<string> {
   const sanitizedName = speciesName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
   const videoName = basename(videoPath, extname(videoPath));
-  const outputFile = join(
-    outputDir,
-    `${videoName}_${sanitizedName}_${Math.floor(timestampSeconds)}s.jpg`
-  );
+  const filename = `${videoName}_${sanitizedName}_${Math.floor(timestampSeconds)}s.jpg`;
+  const outputFile = join(outputDir, filename);
 
   try {
-    await execAsync(
-      `ffmpeg -ss ${timestampSeconds} -i "${videoPath}" -frames:v 1 -q:v 2 "${outputFile}" -y 2>/dev/null`,
-      { timeout: 30000 }
-    );
+    // Extract full frame and thumbnail in one ffmpeg call if thumbsDir provided
+    if (thumbsDir) {
+      const thumbFile = join(thumbsDir, filename);
+      // Use filter_complex with split to create both outputs from single decode
+      await execAsync(
+        `ffmpeg -ss ${timestampSeconds} -i "${videoPath}" ` +
+        `-filter_complex "[0:v]split=2[full][thumb];[thumb]scale=500:300:force_original_aspect_ratio=increase,crop=500:300[scaled]" ` +
+        `-map "[full]" -frames:v 1 -q:v 2 "${outputFile}" ` +
+        `-map "[scaled]" -frames:v 1 -q:v 3 "${thumbFile}" ` +
+        `-y 2>/dev/null`,
+        { timeout: 30000 }
+      );
+    } else {
+      await execAsync(
+        `ffmpeg -ss ${timestampSeconds} -i "${videoPath}" -frames:v 1 -q:v 2 "${outputFile}" -y 2>/dev/null`,
+        { timeout: 30000 }
+      );
+    }
     // Verify the file was actually created (ffmpeg may silently fail for timestamps past video end)
     await access(outputFile, constants.F_OK);
     return outputFile;
