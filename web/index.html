@@ -1893,6 +1893,27 @@
       });
     }
 
+    // Upload queue to limit concurrent uploads
+    const MAX_CONCURRENT_UPLOADS = 4;
+    const uploadQueue = [];
+    let activeUploadCount = 0;
+
+    function enqueueUpload(file, duration) {
+      uploadQueue.push({ file, duration });
+      processUploadQueue();
+    }
+
+    function processUploadQueue() {
+      while (uploadQueue.length > 0 && activeUploadCount < MAX_CONCURRENT_UPLOADS) {
+        const { file, duration } = uploadQueue.shift();
+        activeUploadCount++;
+        uploadAndAnalyze(file, duration).finally(() => {
+          activeUploadCount--;
+          processUploadQueue();
+        });
+      }
+    }
+
     // File selection - upload and analyze immediately
     videoInput.addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
@@ -1919,11 +1940,11 @@
         const duration = await getVideoDuration(file);
         uploadingFiles.add(file.name);
 
-        // Add to queue UI immediately as "uploading"
-        addToQueueUI(file.name, duration, file.size, 'uploading');
+        // Add to queue UI immediately as "pending"
+        addToQueueUI(file.name, duration, file.size, 'queued');
 
-        // Upload and start analysis
-        uploadAndAnalyze(file, duration);
+        // Enqueue for upload (limited concurrency)
+        enqueueUpload(file, duration);
       }
 
       // Reset input so same files can be selected again
