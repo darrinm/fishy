@@ -2035,12 +2035,36 @@
       return { completed, failed };
     }
 
+    // Track if we're currently uploading (to handle adding more files mid-batch)
+    let isUploading = false;
+    let pendingVideos = []; // Videos waiting to be added to current upload
+
     // Analyze button - upload and analyze incrementally
     analyzeBtn.addEventListener('click', async () => {
       if (selectedVideos.length === 0) return;
 
+      // If already uploading, add new videos to the pending queue
+      if (isUploading && currentBatchId) {
+        // Add new videos to batch list UI
+        const newVideos = selectedVideos.map(v => ({
+          path: null,
+          name: v.file.name,
+          size: v.file.size,
+          duration: v.duration,
+          status: 'uploading'
+        }));
+        appendToBatchVideoList(newVideos);
+
+        // Queue them for upload
+        pendingVideos.push(...selectedVideos);
+        selectedVideos = [];
+        renderSelectedVideos();
+        return;
+      }
+
       try {
-        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = 'Add More Videos';
+        isUploading = true;
         errorMessage.classList.remove('visible');
         resultsSection.classList.remove('visible');
         timelineSection.classList.remove('visible');
@@ -2080,7 +2104,30 @@
         progressPercent.textContent = '0%';
 
         // Upload files incrementally with concurrency limit of 3
-        const uploadResults = await processUploadQueue(selectedVideos, batchData.batchId, 3);
+        // This loop handles both initial videos and any added during upload
+        let videosToUpload = [...selectedVideos];
+        selectedVideos = [];
+        renderSelectedVideos();
+
+        while (videosToUpload.length > 0 || pendingVideos.length > 0) {
+          // Add any pending videos to the upload queue
+          if (pendingVideos.length > 0) {
+            videosToUpload.push(...pendingVideos);
+            pendingVideos = [];
+          }
+
+          if (videosToUpload.length > 0) {
+            const uploadResults = await processUploadQueue(videosToUpload, batchData.batchId, 3);
+            videosToUpload = [];
+
+            if (uploadResults.failed.length > 0) {
+              console.warn('Some uploads failed:', uploadResults.failed);
+            }
+          }
+
+          // Check if more videos were added while uploading
+          if (pendingVideos.length === 0) break;
+        }
 
         // Mark uploads complete so batch processor knows to finish
         await fetch(`/api/batch/${batchData.batchId}/complete`, {
@@ -2088,17 +2135,13 @@
         });
 
         progressSection.classList.remove('visible');
+        isUploading = false;
 
-        // Clear selection
-        selectedVideos = [];
-        renderSelectedVideos();
-
-        if (uploadResults.failed.length > 0) {
-          console.warn('Some uploads failed:', uploadResults.failed);
-        }
       } catch (err) {
         showError(err.message);
-        analyzeBtn.disabled = false;
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = 'Analyze Videos';
+        isUploading = false;
         progressSection.classList.remove('visible');
       }
     });
@@ -2912,6 +2955,33 @@
       document.getElementById('batchOverallText').textContent = `0 / ${videos.length} videos`;
     }
 
+    function appendToBatchVideoList(videos) {
+      const list = document.getElementById('batchVideoList');
+      const newHtml = videos.map(v => {
+        const durationStr = formatDuration(v.duration);
+        const sizeStr = formatFileSize(v.size);
+        const status = v.status || 'pending';
+        const statusText = status === 'uploading' ? 'Uploading...' : '';
+        return `
+          <div class="batch-video-item ${status}" data-path="${v.path || ''}" data-name="${v.name}">
+            <span class="batch-video-status"></span>
+            <span class="batch-video-info">
+              <span class="batch-video-name" title="${v.path || v.name}">${v.name}</span>
+              <span class="batch-video-meta">${durationStr} · ${sizeStr}</span>
+            </span>
+            <span class="batch-video-progress">${statusText}</span>
+          </div>
+        `;
+      }).join('');
+      list.insertAdjacentHTML('beforeend', newHtml);
+
+      // Update total count in progress bar
+      const totalItems = list.querySelectorAll('.batch-video-item').length;
+      const completedItems = list.querySelectorAll('.batch-video-item.completed, .batch-video-item.failed, .batch-video-item.skipped').length;
+      document.getElementById('batchOverallText').textContent =
+        `${completedItems} / ${totalItems} videos`;
+    }
+
     function listenToBatchProgress(batchId) {
       batchEventSource = new EventSource(`/api/batch/${batchId}/progress`);
 
@@ -2992,14 +3062,16 @@
         batchEventSource.close();
         batchEventSource = null;
         currentBatchId = null;
+        isUploading = false;
 
         const data = JSON.parse(e.data);
         document.getElementById('batchOverallFill').style.width = '100%';
         document.getElementById('batchOverallText').textContent =
           `Complete! ${data.completed.length} succeeded, ${data.failed.length} failed`;
 
-        // Re-enable analyze button
-        analyzeBtn.disabled = false;
+        // Reset analyze button
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = 'Analyze Videos';
 
         // Refresh history and species
         await loadHistory();
@@ -3015,13 +3087,15 @@
         batchEventSource.close();
         batchEventSource = null;
         currentBatchId = null;
+        isUploading = false;
 
         const data = JSON.parse(e.data);
         document.getElementById('batchOverallText').textContent =
           `Cancelled. ${data.completed.length} completed, ${data.remaining} skipped`;
 
-        // Re-enable analyze button
-        analyzeBtn.disabled = false;
+        // Reset analyze button
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = 'Analyze Videos';
 
         await loadHistory();
         await loadAggregatedSpecies();
@@ -3034,7 +3108,9 @@
       batchEventSource.onerror = () => {
         batchEventSource.close();
         batchEventSource = null;
-        analyzeBtn.disabled = false;
+        isUploading = false;
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = 'Analyze Videos';
         showError('Lost connection to batch progress');
       };
     }

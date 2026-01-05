@@ -869,12 +869,8 @@ async function processIncrementalBatch(
     }
   };
 
-  // Spawn 3 concurrent workers
-  const workers = [];
-  for (let i = 0; i < 3; i++) {
-    workers.push(worker());
-  }
-  await Promise.all(workers);
+  // Use single worker for strict FIFO order (videos analyzed in upload order)
+  await worker();
 
   // Mark batch as complete
   if (!jobManager.isBatchCancelled(batchId)) {
