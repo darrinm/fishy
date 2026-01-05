@@ -472,10 +472,14 @@
     }
 
     .results-header {
-      display: flex;
+      display: none;
       justify-content: space-between;
       align-items: center;
       margin-bottom: 1rem;
+    }
+
+    .results-header.visible {
+      display: flex;
     }
 
     .results-header h2 {
@@ -1174,6 +1178,22 @@
       color: var(--text-secondary);
     }
 
+    .clear-queue-btn {
+      display: none;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .clear-queue-btn:hover {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
     .batch-overall-progress {
       margin-bottom: 1rem;
     }
@@ -1323,14 +1343,13 @@
       <!-- Controls -->
       <div class="controls">
         <div class="control-group">
-          <h3>Select Videos</h3>
+          <h3>Add Videos</h3>
           <div class="file-input-wrapper">
             <input type="file" id="videoInput" class="file-input" accept="video/*" multiple>
             <label for="videoInput" class="file-label" id="fileLabel">
-              Choose videos
+              Choose videos to analyze
             </label>
           </div>
-          <div class="selected-videos" id="selectedVideos"></div>
         </div>
 
         <div class="control-group">
@@ -1351,38 +1370,22 @@
             <input type="checkbox" id="extractFrames" checked>
             <label for="extractFrames">Extract frames</label>
           </div>
-          <button class="analyze-btn" id="analyzeBtn" disabled>
-            Analyze
-          </button>
         </div>
       </div>
 
-      <!-- Progress -->
-      <div class="progress-section" id="progressSection">
-        <div class="progress-bar">
-          <div class="progress-fill" id="progressFill" style="width: 0%"></div>
-        </div>
-        <div class="progress-text">
-          <span id="progressMessage">Preparing...</span>
-          <span id="progressPercent">0%</span>
-        </div>
-      </div>
-
-      <!-- Batch Progress -->
-      <div class="batch-progress-section" id="batchProgressSection">
+      <!-- Analysis Queue -->
+      <div class="batch-progress-section" id="queueSection">
         <div class="batch-progress-header">
-          <h3>Batch Progress</h3>
-          <button class="danger" onclick="cancelBatchAnalysis()">Cancel</button>
+          <h3>Analysis Queue</h3>
+          <button class="clear-queue-btn" id="clearQueueBtn">Clear Completed</button>
         </div>
-        <div class="batch-overall-progress">
-          <div class="batch-overall-bar">
-            <div class="batch-overall-fill" id="batchOverallFill" style="width: 0%"></div>
-          </div>
-          <div class="batch-overall-text">
-            <span id="batchOverallText">0 / 0 videos</span>
-          </div>
-        </div>
-        <div class="batch-video-list" id="batchVideoList"></div>
+        <div class="batch-video-list" id="queueList"></div>
+      </div>
+
+      <!-- Results Header -->
+      <div class="results-header" id="resultsHeader">
+        <h2 id="resultsTitle">Results</h2>
+        <span class="species-count-badge" id="speciesCountBadge">0 species</span>
       </div>
 
       <!-- Timeline -->
@@ -1397,10 +1400,6 @@
 
       <!-- Results -->
       <div class="results-section" id="resultsSection">
-        <div class="results-header">
-          <h2>Results</h2>
-          <span class="species-count-badge" id="speciesCountBadge">0 species</span>
-        </div>
         <div class="video-player-section" id="videoPlayerSection" style="display: none;">
           <h3>Video</h3>
           <video id="resultVideo" controls></video>
@@ -1474,11 +1473,9 @@
     // DOM elements
     const videoInput = document.getElementById('videoInput');
     const fileLabel = document.getElementById('fileLabel');
-    const selectedVideosEl = document.getElementById('selectedVideos');
     const modelSelect = document.getElementById('modelSelect');
     const fpsSelect = document.getElementById('fpsSelect');
     const extractFrames = document.getElementById('extractFrames');
-    const analyzeBtn = document.getElementById('analyzeBtn');
     const progressSection = document.getElementById('progressSection');
     const progressFill = document.getElementById('progressFill');
     const progressMessage = document.getElementById('progressMessage');
@@ -1491,9 +1488,12 @@
     const historyList = document.getElementById('historyList');
     const clearHistoryBtn = document.getElementById('clearHistoryBtn');
     const editDatesBtn = document.getElementById('editDatesBtn');
+    const queueSection = document.getElementById('queueSection');
+    const queueList = document.getElementById('queueList');
 
-    // State for selected videos (File objects with duration)
-    let selectedVideos = [];
+    // State for active analysis jobs (filename -> { jobId, status, eventSource })
+    const activeJobs = new Map();
+    const uploadingFiles = new Set(); // Track filenames currently being uploaded
 
     // State for starred frames, rotations, and bounding boxes
     let starredFilenames = new Set();
@@ -1877,279 +1877,230 @@
       });
     }
 
-    // Render selected videos list
-    function renderSelectedVideos() {
-      if (selectedVideos.length === 0) {
-        selectedVideosEl.innerHTML = '';
-        fileLabel.classList.remove('has-file');
-        fileLabel.textContent = 'Choose videos';
-        analyzeBtn.disabled = true;
-        analyzeBtn.textContent = 'Analyze';
-        return;
-      }
-
-      fileLabel.classList.add('has-file');
-      fileLabel.textContent = `${selectedVideos.length} video${selectedVideos.length > 1 ? 's' : ''} selected`;
-      analyzeBtn.disabled = false;
-      analyzeBtn.textContent = selectedVideos.length === 1 ? 'Analyze Video' : `Analyze ${selectedVideos.length} Videos`;
-
-      selectedVideosEl.innerHTML = selectedVideos.map((v, idx) => `
-        <div class="selected-video-item">
-          <span class="selected-video-info">
-            <span class="selected-video-name">${v.file.name}</span>
-            <span class="selected-video-meta">${formatDuration(v.duration)} · ${formatFileSize(v.file.size)}</span>
-          </span>
-          <button class="selected-video-remove" onclick="removeSelectedVideo(${idx})">×</button>
-        </div>
-      `).join('');
+    // Check if a video has already been analyzed
+    function isAlreadyAnalyzed(filename) {
+      return allAnalyses.some(a => {
+        const analyzedName = a.video?.split('/').pop();
+        return analyzedName === filename;
+      });
     }
 
-    // Remove a video from selection
-    window.removeSelectedVideo = function(idx) {
-      selectedVideos.splice(idx, 1);
-      renderSelectedVideos();
-    };
-
-    // File selection - multiple files
+    // File selection - upload and analyze immediately
     videoInput.addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (files.length === 0) return;
 
-      // Get duration for each file
+      // Show queue section
+      queueSection.classList.add('visible');
+
+      // Process each file
       for (const file of files) {
+        // Skip if already uploading this file
+        if (uploadingFiles.has(file.name)) continue;
+
+        // Skip if already in the queue
+        if (activeJobs.has(file.name)) continue;
+
+        // Check if already analyzed
+        if (isAlreadyAnalyzed(file.name)) {
+          addToQueueUI(file.name, 0, file.size, 'skipped');
+          updateQueueItemStatus(file.name, 'skipped', 'Already analyzed');
+          continue;
+        }
+
         const duration = await getVideoDuration(file);
-        selectedVideos.push({ file, duration });
+        uploadingFiles.add(file.name);
+
+        // Add to queue UI immediately as "uploading"
+        addToQueueUI(file.name, duration, file.size, 'uploading');
+
+        // Upload and start analysis
+        uploadAndAnalyze(file, duration);
       }
 
-      renderSelectedVideos();
       // Reset input so same files can be selected again
       videoInput.value = '';
     });
 
-    // Upload a single file and return result
-    async function uploadSingleFile(file, onProgress) {
-      return new Promise((resolve, reject) => {
-        const formData = new FormData();
-        formData.append('video', file);
-
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/upload/single');
-
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable && onProgress) {
-            onProgress(e.loaded / e.total);
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status === 200) {
-            resolve(JSON.parse(xhr.responseText));
-          } else {
-            reject(new Error(JSON.parse(xhr.responseText).error || 'Upload failed'));
-          }
-        };
-        xhr.onerror = () => reject(new Error('Upload failed'));
-        xhr.send(formData);
-      });
-    }
-
-    // Process upload queue with concurrency limit
-    async function processUploadQueue(files, batchId, concurrency = 3) {
-      const queue = [...files];
-      const inProgress = new Map(); // file -> { progress: 0-1 }
-      const completed = [];
-      const failed = [];
-
-      const updateOverallProgress = () => {
-        const totalFiles = files.length;
-        const completedCount = completed.length + failed.length;
-        let inProgressSum = 0;
-        for (const info of inProgress.values()) {
-          inProgressSum += info.progress;
-        }
-        const overallProgress = (completedCount + inProgressSum) / totalFiles;
-        progressFill.style.width = `${Math.round(overallProgress * 100)}%`;
-        progressPercent.textContent = `${Math.round(overallProgress * 100)}%`;
-        progressMessage.textContent = `Uploading: ${completedCount}/${totalFiles} complete, ${inProgress.size} in progress`;
-      };
-
-      const uploadNext = async () => {
-        if (queue.length === 0) return;
-
-        const fileInfo = queue.shift();
-        inProgress.set(fileInfo.file.name, { progress: 0 });
-
-        try {
-          const result = await uploadSingleFile(fileInfo.file, (progress) => {
-            inProgress.get(fileInfo.file.name).progress = progress;
-            updateOverallProgress();
-          });
-
-          inProgress.delete(fileInfo.file.name);
-          completed.push({ ...result, duration: fileInfo.duration });
-
-          // Add to batch immediately
-          await fetch(`/api/batch/${batchId}/add`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              path: result.path,
-              originalName: result.originalName,
-            }),
-          });
-
-          updateOverallProgress();
-        } catch (err) {
-          inProgress.delete(fileInfo.file.name);
-          failed.push({ file: fileInfo.file.name, error: err.message });
-          updateOverallProgress();
-        }
-      };
-
-      // Start initial batch of concurrent uploads
-      const workers = [];
-      for (let i = 0; i < Math.min(concurrency, files.length); i++) {
-        workers.push((async () => {
-          while (queue.length > 0 || inProgress.size > 0) {
-            if (queue.length > 0) {
-              await uploadNext();
-            } else {
-              // Wait a bit for other workers to finish
-              await new Promise(r => setTimeout(r, 50));
-            }
-          }
-        })());
-      }
-
-      // Wait for a short time to let workers start, then run remaining
-      await Promise.race([
-        Promise.all(workers),
-        new Promise(r => setTimeout(r, 100))
-      ]);
-
-      // Continue until all done
-      while (queue.length > 0 || inProgress.size > 0) {
-        await new Promise(r => setTimeout(r, 100));
-      }
-
-      return { completed, failed };
-    }
-
-    // Track if we're currently uploading (to handle adding more files mid-batch)
-    let isUploading = false;
-    let pendingVideos = []; // Videos waiting to be added to current upload
-
-    // Analyze button - upload and analyze incrementally
-    analyzeBtn.addEventListener('click', async () => {
-      if (selectedVideos.length === 0) return;
-
-      // If already uploading, add new videos to the pending queue
-      if (isUploading && currentBatchId) {
-        // Add new videos to batch list UI
-        const newVideos = selectedVideos.map(v => ({
-          path: null,
-          name: v.file.name,
-          size: v.file.size,
-          duration: v.duration,
-          status: 'uploading'
-        }));
-        appendToBatchVideoList(newVideos);
-
-        // Queue them for upload
-        pendingVideos.push(...selectedVideos);
-        selectedVideos = [];
-        renderSelectedVideos();
-        return;
-      }
+    // Upload a file and start analysis
+    async function uploadAndAnalyze(file, duration) {
+      const filename = file.name;
 
       try {
-        analyzeBtn.textContent = 'Add More Videos';
-        isUploading = true;
-        errorMessage.classList.remove('visible');
-        resultsSection.classList.remove('visible');
-        timelineSection.classList.remove('visible');
+        const formData = new FormData();
+        formData.append('video', file);
+        formData.append('model', modelSelect.value);
+        formData.append('fps', fpsSelect.value);
 
-        // Create batch first (before uploading)
-        const createRes = await fetch('/api/batch/create', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: modelSelect.value,
-            fps: parseInt(fpsSelect.value),
-            expectedCount: selectedVideos.length,
-          }),
-        });
-        const batchData = await createRes.json();
-        if (batchData.error) throw new Error(batchData.error);
+        // Upload with progress tracking
+        const { jobId } = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/analyze');
 
-        currentBatchId = batchData.batchId;
+          xhr.upload.onloadstart = () => {
+            updateQueueItemStatus(filename, 'uploading', 'Uploading 0%');
+          };
 
-        // Show batch progress section with uploading placeholders
-        document.getElementById('batchProgressSection').classList.add('visible');
-        initBatchVideoList(selectedVideos.map(v => ({
-          path: null,  // Not uploaded yet
-          name: v.file.name,
-          size: v.file.size,
-          duration: v.duration,
-          status: 'uploading'
-        })));
-
-        // Start listening to batch progress (analysis will start as videos are added)
-        listenToBatchProgress(batchData.batchId);
-
-        // Show upload progress
-        progressSection.classList.add('visible');
-        progressMessage.textContent = 'Uploading videos...';
-        progressFill.style.width = '0%';
-        progressPercent.textContent = '0%';
-
-        // Upload files incrementally with concurrency limit of 3
-        // This loop handles both initial videos and any added during upload
-        let videosToUpload = [...selectedVideos];
-        selectedVideos = [];
-        renderSelectedVideos();
-
-        while (videosToUpload.length > 0 || pendingVideos.length > 0) {
-          // Add any pending videos to the upload queue
-          if (pendingVideos.length > 0) {
-            videosToUpload.push(...pendingVideos);
-            pendingVideos = [];
-          }
-
-          if (videosToUpload.length > 0) {
-            const uploadResults = await processUploadQueue(videosToUpload, batchData.batchId, 3);
-            videosToUpload = [];
-
-            if (uploadResults.failed.length > 0) {
-              console.warn('Some uploads failed:', uploadResults.failed);
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const percent = Math.round((e.loaded / e.total) * 100);
+              updateQueueItemStatus(filename, 'uploading', `Uploading ${percent}%`);
             }
-          }
+          };
 
-          // Check if more videos were added while uploading
-          if (pendingVideos.length === 0) break;
-        }
+          xhr.upload.onload = () => {
+            updateQueueItemStatus(filename, 'uploading', 'Processing...');
+          };
 
-        // Mark uploads complete so batch processor knows to finish
-        await fetch(`/api/batch/${batchData.batchId}/complete`, {
-          method: 'POST',
+          xhr.onload = () => {
+            if (xhr.status === 200) {
+              resolve(JSON.parse(xhr.responseText));
+            } else {
+              reject(new Error(JSON.parse(xhr.responseText).error || 'Upload failed'));
+            }
+          };
+          xhr.onerror = () => reject(new Error('Upload failed'));
+          xhr.send(formData);
         });
 
-        progressSection.classList.remove('visible');
-        isUploading = false;
+        uploadingFiles.delete(filename);
+
+        // Update UI to "queued" and listen for progress
+        updateQueueItemStatus(filename, 'queued', 'Queued');
+        listenToJobProgress(jobId, filename);
 
       } catch (err) {
-        showError(err.message);
-        analyzeBtn.disabled = true;
-        analyzeBtn.textContent = 'Analyze Videos';
-        isUploading = false;
-        progressSection.classList.remove('visible');
+        uploadingFiles.delete(filename);
+        updateQueueItemStatus(filename, 'failed', err.message);
       }
-    });
+    }
+
+    // Listen to job progress via SSE
+    function listenToJobProgress(jobId, filename) {
+      const es = new EventSource(`/api/analyze/${jobId}/progress`);
+
+      activeJobs.set(filename, { jobId, status: 'queued', eventSource: es });
+
+      es.addEventListener('progress', (e) => {
+        const data = JSON.parse(e.data);
+        activeJobs.get(filename).status = 'processing';
+        updateQueueItemStatus(filename, 'processing', data.message);
+      });
+
+      es.addEventListener('complete', async (e) => {
+        const data = JSON.parse(e.data);
+        activeJobs.get(filename).status = 'completed';
+        es.close();
+
+        const speciesCount = data.result?.identifiedSpecies?.length || 0;
+        const timing = data.result?.timing;
+
+        // Build status text with species count and detailed timing
+        let statusText = `${speciesCount} species`;
+        if (timing) {
+          const parts = [];
+          if (timing.uploadMs) parts.push(`upload ${formatMs(timing.uploadMs)}`);
+          if (timing.extractFramesMs) parts.push(`extract ${formatMs(timing.extractFramesMs)}`);
+          if (timing.analysisMs) parts.push(`AI ${formatMs(timing.analysisMs)}`);
+          if (timing.frameExtractionMs) parts.push(`frames ${formatMs(timing.frameExtractionMs)}`);
+          if (timing.totalMs) parts.push(`total ${formatMs(timing.totalMs)}`);
+          if (parts.length > 0) statusText += ` · ${parts.join(' · ')}`;
+        }
+
+        updateQueueItemStatus(filename, 'completed', statusText);
+
+        // Display results and refresh sidebar
+        if (data.result) {
+          currentResult = data.result;
+          displayResults(data.result);
+        }
+        await loadHistory();
+        await loadAggregatedSpecies();
+      });
+
+      es.addEventListener('error', (e) => {
+        let errorMsg = 'Analysis failed';
+        try {
+          const data = JSON.parse(e.data);
+          errorMsg = data.error || errorMsg;
+        } catch {}
+        activeJobs.get(filename).status = 'failed';
+        es.close();
+        updateQueueItemStatus(filename, 'failed', errorMsg);
+      });
+
+      es.onerror = () => {
+        activeJobs.get(filename).status = 'failed';
+        es.close();
+        updateQueueItemStatus(filename, 'failed', 'Connection lost');
+      };
+    }
+
+    // Add item to queue UI
+    function addToQueueUI(name, duration, size, status) {
+      const durationStr = formatDuration(duration);
+      const sizeStr = formatFileSize(size);
+      const html = `
+        <div class="batch-video-item ${status}" data-name="${name}">
+          <span class="batch-video-status"></span>
+          <span class="batch-video-info">
+            <span class="batch-video-name" title="${name}">${name}</span>
+            <span class="batch-video-meta">${durationStr} · ${sizeStr}</span>
+          </span>
+          <span class="batch-video-progress">${status === 'uploading' ? 'Uploading...' : ''}</span>
+        </div>
+      `;
+      queueList.insertAdjacentHTML('beforeend', html);
+    }
+
+    // Update queue item status
+    function updateQueueItemStatus(name, status, message) {
+      const item = document.querySelector(`.batch-video-item[data-name="${name}"]`);
+      if (item) {
+        item.className = `batch-video-item ${status}`;
+        item.querySelector('.batch-video-progress').textContent = message || '';
+
+        // Auto-scroll to keep current item visible when processing
+        if (status === 'processing') {
+          item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }
+
+      // Show/hide clear button based on completed items
+      const hasCompletedItems = queueList.querySelectorAll('.batch-video-item.completed, .batch-video-item.failed, .batch-video-item.skipped').length > 0;
+      document.getElementById('clearQueueBtn').style.display = hasCompletedItems ? 'block' : 'none';
+    }
+
+    // Clear completed items from queue
+    function clearCompletedFromQueue() {
+      const completedItems = queueList.querySelectorAll('.batch-video-item.completed, .batch-video-item.failed, .batch-video-item.skipped');
+      completedItems.forEach(item => {
+        const name = item.dataset.name;
+        activeJobs.delete(name);
+        item.remove();
+      });
+
+      // Hide clear button after clearing
+      document.getElementById('clearQueueBtn').style.display = 'none';
+
+      // Hide queue section if empty
+      if (queueList.children.length === 0) {
+        queueSection.classList.remove('visible');
+      }
+    }
+
+    // Setup clear queue button
+    document.getElementById('clearQueueBtn')?.addEventListener('click', clearCompletedFromQueue);
 
     // Display results
     function displayResults(result) {
+      document.getElementById('resultsHeader').classList.add('visible');
       resultsSection.classList.add('visible');
       timelineSection.classList.add('visible');
+
+      // Update results title with video name
+      const videoFileName = result.video?.split('/').pop() || 'Results';
+      document.getElementById('resultsTitle').textContent = `${videoFileName} Results`;
 
       // Show video player if videoPath is available
       const videoSection = document.getElementById('videoPlayerSection');
@@ -2911,10 +2862,7 @@
       }
     });
 
-    // ============ BATCH ANALYSIS ============
-
-    let currentBatchId = null;
-    let batchEventSource = null;
+    // ============ UTILITY FUNCTIONS ============
 
     function formatFileSize(bytes) {
       if (!bytes || isNaN(bytes)) return '--';
@@ -2929,217 +2877,6 @@
       const mins = Math.floor(seconds / 60);
       const secs = Math.floor(seconds % 60);
       return `${mins}:${secs.toString().padStart(2, '0')}`;
-    }
-
-    function initBatchVideoList(videos) {
-      const list = document.getElementById('batchVideoList');
-      list.innerHTML = videos.map(v => {
-        const durationStr = formatDuration(v.duration);
-        const sizeStr = formatFileSize(v.size);
-        // Use name as identifier, path may not be available yet for incremental uploads
-        const status = v.status || 'pending';
-        const statusText = status === 'uploading' ? 'Uploading...' : '';
-        return `
-          <div class="batch-video-item ${status}" data-path="${v.path || ''}" data-name="${v.name}">
-            <span class="batch-video-status"></span>
-            <span class="batch-video-info">
-              <span class="batch-video-name" title="${v.path || v.name}">${v.name}</span>
-              <span class="batch-video-meta">${durationStr} · ${sizeStr}</span>
-            </span>
-            <span class="batch-video-progress">${statusText}</span>
-          </div>
-        `;
-      }).join('');
-
-      document.getElementById('batchOverallFill').style.width = '0%';
-      document.getElementById('batchOverallText').textContent = `0 / ${videos.length} videos`;
-    }
-
-    function appendToBatchVideoList(videos) {
-      const list = document.getElementById('batchVideoList');
-      const newHtml = videos.map(v => {
-        const durationStr = formatDuration(v.duration);
-        const sizeStr = formatFileSize(v.size);
-        const status = v.status || 'pending';
-        const statusText = status === 'uploading' ? 'Uploading...' : '';
-        return `
-          <div class="batch-video-item ${status}" data-path="${v.path || ''}" data-name="${v.name}">
-            <span class="batch-video-status"></span>
-            <span class="batch-video-info">
-              <span class="batch-video-name" title="${v.path || v.name}">${v.name}</span>
-              <span class="batch-video-meta">${durationStr} · ${sizeStr}</span>
-            </span>
-            <span class="batch-video-progress">${statusText}</span>
-          </div>
-        `;
-      }).join('');
-      list.insertAdjacentHTML('beforeend', newHtml);
-
-      // Update total count in progress bar
-      const totalItems = list.querySelectorAll('.batch-video-item').length;
-      const completedItems = list.querySelectorAll('.batch-video-item.completed, .batch-video-item.failed, .batch-video-item.skipped').length;
-      document.getElementById('batchOverallText').textContent =
-        `${completedItems} / ${totalItems} videos`;
-    }
-
-    function listenToBatchProgress(batchId) {
-      batchEventSource = new EventSource(`/api/batch/${batchId}/progress`);
-
-      batchEventSource.addEventListener('video_start', (e) => {
-        const data = JSON.parse(e.data);
-        updateBatchVideoStatus(data.path, 'processing', '');
-      });
-
-      batchEventSource.addEventListener('video_progress', (e) => {
-        const data = JSON.parse(e.data);
-        updateBatchVideoStatus(data.path, 'processing', `${data.percent}% - ${data.message}`);
-      });
-
-      batchEventSource.addEventListener('batch_progress', (e) => {
-        const data = JSON.parse(e.data);
-        const percent = ((data.completed + data.failed) / data.total) * 100;
-        document.getElementById('batchOverallFill').style.width = `${percent}%`;
-        document.getElementById('batchOverallText').textContent =
-          `${data.completed + data.failed} / ${data.total} videos (${data.completed} done, ${data.failed} failed)`;
-      });
-
-      batchEventSource.addEventListener('video_complete', async (e) => {
-        const data = JSON.parse(e.data);
-        const speciesCount = data.result?.identifiedSpecies?.length || 0;
-        const timing = data.result?.timing;
-
-        // Build status text with species count and timing
-        let statusText = `${speciesCount} species`;
-        if (timing) {
-          const parts = [];
-          if (timing.uploadMs) parts.push(`upload ${formatMs(timing.uploadMs)}`);
-          if (timing.analysisMs) parts.push(`analysis ${formatMs(timing.analysisMs)}`);
-          if (timing.totalMs) parts.push(`total ${formatMs(timing.totalMs)}`);
-          if (parts.length > 0) statusText += ` · ${parts.join(' · ')}`;
-        }
-
-        updateBatchVideoStatus(data.path, 'completed', statusText);
-
-        // Update sidebar and show results as each video completes
-        await loadHistory();
-        await loadAggregatedSpecies();
-
-        // Display the results of this completed video
-        if (data.result) {
-          currentResult = data.result;
-          displayResults(data.result);
-        }
-      });
-
-      batchEventSource.addEventListener('video_error', (e) => {
-        const data = JSON.parse(e.data);
-        updateBatchVideoStatus(data.path, 'failed', data.error);
-      });
-
-      batchEventSource.addEventListener('video_skipped', (e) => {
-        const data = JSON.parse(e.data);
-        updateBatchVideoStatus(data.path, 'skipped', data.reason);
-      });
-
-      batchEventSource.addEventListener('video_added', (e) => {
-        const data = JSON.parse(e.data);
-        // Update item with path now that upload is complete
-        const item = document.querySelector(`.batch-video-item[data-name="${data.originalName}"]`);
-        if (item) {
-          item.setAttribute('data-path', data.path);
-          item.className = 'batch-video-item queued';
-          item.querySelector('.batch-video-progress').textContent = 'Queued';
-        }
-      });
-
-      batchEventSource.addEventListener('uploads_complete', (e) => {
-        const data = JSON.parse(e.data);
-        // All uploads done, batch will finish when analysis completes
-        console.log('All uploads complete:', data.total, 'videos');
-      });
-
-      batchEventSource.addEventListener('batch_complete', async (e) => {
-        batchEventSource.close();
-        batchEventSource = null;
-        currentBatchId = null;
-        isUploading = false;
-
-        const data = JSON.parse(e.data);
-        document.getElementById('batchOverallFill').style.width = '100%';
-        document.getElementById('batchOverallText').textContent =
-          `Complete! ${data.completed.length} succeeded, ${data.failed.length} failed`;
-
-        // Reset analyze button
-        analyzeBtn.disabled = true;
-        analyzeBtn.textContent = 'Analyze Videos';
-
-        // Refresh history and species
-        await loadHistory();
-        await loadAggregatedSpecies();
-
-        // After a delay, hide progress
-        setTimeout(() => {
-          document.getElementById('batchProgressSection').classList.remove('visible');
-        }, 2000);
-      });
-
-      batchEventSource.addEventListener('batch_cancelled', async (e) => {
-        batchEventSource.close();
-        batchEventSource = null;
-        currentBatchId = null;
-        isUploading = false;
-
-        const data = JSON.parse(e.data);
-        document.getElementById('batchOverallText').textContent =
-          `Cancelled. ${data.completed.length} completed, ${data.remaining} skipped`;
-
-        // Reset analyze button
-        analyzeBtn.disabled = true;
-        analyzeBtn.textContent = 'Analyze Videos';
-
-        await loadHistory();
-        await loadAggregatedSpecies();
-
-        setTimeout(() => {
-          document.getElementById('batchProgressSection').classList.remove('visible');
-        }, 2000);
-      });
-
-      batchEventSource.onerror = () => {
-        batchEventSource.close();
-        batchEventSource = null;
-        isUploading = false;
-        analyzeBtn.disabled = true;
-        analyzeBtn.textContent = 'Analyze Videos';
-        showError('Lost connection to batch progress');
-      };
-    }
-
-    function updateBatchVideoStatus(path, status, progressText) {
-      const item = document.querySelector(`.batch-video-item[data-path="${path}"]`);
-      if (item) {
-        item.className = `batch-video-item ${status}`;
-        item.querySelector('.batch-video-progress').textContent = progressText;
-
-        // Auto-scroll to keep current item visible
-        if (status === 'processing') {
-          item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-      }
-    }
-
-    async function cancelBatchAnalysis() {
-      if (!currentBatchId) return;
-
-      if (!confirm('Cancel batch analysis? Current video will finish, remaining will be skipped.')) {
-        return;
-      }
-
-      try {
-        await fetch(`/api/batch/${currentBatchId}`, { method: 'DELETE' });
-      } catch (err) {
-        console.error('Failed to cancel batch:', err);
-      }
     }
 
     // Initialize on load

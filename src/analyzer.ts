@@ -1,9 +1,9 @@
 import { mkdir } from 'node:fs/promises';
 import { uploadVideo, analyzeVideo, deleteFile } from './gemini.js';
 import { analyzeWithOpenAI } from './openai.js';
-import { extractFrame, extractFramesAsBase64, checkFfmpeg, createThumbnail } from './video.js';
+import { extractFrame, extractFramesAsBase64, checkFfmpeg, createThumbnail, getVideoDuration } from './video.js';
 import { join } from 'node:path';
-import type { FishFinderResult, IdentifiedSpecies, AnalyzeOptions, GeminiAnalysisResponse, AnalysisTiming } from './types.js';
+import type { FishFinderResult, IdentifiedSpecies, AnalyzeOptions, GeminiAnalysisResponse, AnalysisTiming, AnalysisStage } from './types.js';
 
 interface AnalysisWithTiming {
   analysis: GeminiAnalysisResponse;
@@ -14,13 +14,13 @@ export async function analyzeVideoFile(
   videoPath: string,
   options: AnalyzeOptions
 ): Promise<FishFinderResult> {
-  const { provider } = options;
+  const { provider, onProgress } = options;
   const totalStart = Date.now();
 
   // Route to appropriate provider
   const { analysis, timing } = provider === 'openai'
-    ? await analyzeWithOpenAIProvider(videoPath, options)
-    : await analyzeWithGeminiProvider(videoPath, options);
+    ? await analyzeWithOpenAIProvider(videoPath, options, onProgress)
+    : await analyzeWithGeminiProvider(videoPath, options, onProgress);
 
   // Transform response to our format
   const identifiedSpecies: IdentifiedSpecies[] = analysis.species.map(s => ({
@@ -35,6 +35,7 @@ export async function analyzeVideoFile(
   // Extract frames if requested
   let frameExtractionMs: number | undefined;
   if (options.extractFrames && identifiedSpecies.length > 0) {
+    onProgress?.('saving-frames', 'Saving frames');
     const frameStart = Date.now();
     await extractSpeciesFrames(videoPath, identifiedSpecies, options);
     frameExtractionMs = Date.now() - frameStart;
@@ -58,16 +59,22 @@ export async function analyzeVideoFile(
 
 async function analyzeWithGeminiProvider(
   videoPath: string,
-  options: AnalyzeOptions
+  options: AnalyzeOptions,
+  onProgress?: (stage: AnalysisStage, message: string) => void
 ): Promise<AnalysisWithTiming> {
   const { model, verbose, fps } = options;
 
+  // Get actual video duration for validation
+  const actualDuration = await getVideoDuration(videoPath);
+
   // Upload video to Gemini
+  onProgress?.('uploading', 'Uploading to AI');
   const uploadStart = Date.now();
   const { uri, mimeType, fileName } = await uploadVideo(videoPath, verbose);
   const uploadMs = Date.now() - uploadStart;
 
   // Analyze with Gemini
+  onProgress?.('analyzing', 'Analyzing');
   const analysisStart = Date.now();
   let analysis: GeminiAnalysisResponse;
   try {
@@ -81,6 +88,20 @@ async function analyzeWithGeminiProvider(
   }
   const analysisMs = Date.now() - analysisStart;
 
+  // Validate duration - detect hallucinated results
+  const reportedDuration = analysis.video_duration_seconds;
+  if (actualDuration > 0 && Math.abs(reportedDuration - actualDuration) > actualDuration * 0.5) {
+    console.warn(`Duration mismatch: Gemini reported ${reportedDuration}s but video is ${actualDuration.toFixed(1)}s`);
+    // Override with actual duration
+    analysis.video_duration_seconds = actualDuration;
+    // If reported duration is way off, likely hallucinated - return empty results
+    if (reportedDuration > actualDuration * 3 || reportedDuration < actualDuration * 0.3) {
+      console.error(`Gemini hallucination detected - clearing invalid results`);
+      analysis.species = [];
+      analysis.summary = 'Analysis failed: AI returned invalid results for this video.';
+    }
+  }
+
   return {
     analysis,
     timing: { uploadMs, analysisMs },
@@ -89,16 +110,19 @@ async function analyzeWithGeminiProvider(
 
 async function analyzeWithOpenAIProvider(
   videoPath: string,
-  options: AnalyzeOptions
+  options: AnalyzeOptions,
+  onProgress?: (stage: AnalysisStage, message: string) => void
 ): Promise<AnalysisWithTiming> {
   const { model, verbose, fps = 1 } = options;
 
   // Extract frames locally
+  onProgress?.('extracting-frames', 'Extracting frames');
   const extractStart = Date.now();
   const { frames, duration } = await extractFramesAsBase64(videoPath, fps, verbose);
   const extractFramesMs = Date.now() - extractStart;
 
   // Analyze with OpenAI
+  onProgress?.('analyzing', 'Analyzing');
   const analysisStart = Date.now();
   const analysis = await analyzeWithOpenAI(frames, model, verbose, duration);
   const analysisMs = Date.now() - analysisStart;

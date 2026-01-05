@@ -51,6 +51,48 @@ const upload = multer({
   },
 });
 
+// ============ JOB QUEUE (SINGLE CONCURRENCY) ============
+
+interface QueuedJob {
+  jobId: string;
+  videoPath: string;
+  originalName: string;
+  modelConfig: { model: string; provider: string };
+  fps: number;
+}
+
+const analysisQueue: QueuedJob[] = [];
+const MAX_CONCURRENT_JOBS = 4;
+let activeJobCount = 0;
+
+async function processQueue(): Promise<void> {
+  while (analysisQueue.length > 0 && activeJobCount < MAX_CONCURRENT_JOBS) {
+    const job = analysisQueue.shift()!;
+    activeJobCount++;
+
+    // Run job without awaiting - allows parallel execution
+    analyzeVideoJob(job.jobId, job.videoPath, job.originalName, job.modelConfig, job.fps)
+      .catch(error => console.error(`Job ${job.jobId} failed:`, error))
+      .finally(() => {
+        activeJobCount--;
+        processQueue(); // Process next job when one finishes
+      });
+  }
+}
+
+function enqueueJob(job: QueuedJob): void {
+  // Create the job immediately so SSE can connect
+  jobManager.createJob(job.jobId);
+  jobManager.updateProgress(job.jobId, {
+    stage: 'processing',
+    percent: 0,
+    message: 'Queued',
+  });
+
+  analysisQueue.push(job);
+  processQueue();
+}
+
 // POST /api/upload - Upload video files (batch)
 router.post('/upload', upload.array('videos', 50), (req: Request, res: Response) => {
   const files = req.files as Express.Multer.File[];
@@ -108,6 +150,171 @@ router.get('/models', (_req: Request, res: Response) => {
 
   res.json({ models });
 });
+
+// ============ SIMPLE ANALYZE ENDPOINT (NO BATCHES) ============
+
+// POST /api/analyze - Upload and analyze a single video
+router.post('/analyze', upload.single('video'), (req: Request, res: Response) => {
+  const file = req.file;
+  if (!file) {
+    res.status(400).json({ error: 'No video file uploaded' });
+    return;
+  }
+
+  const { model = '3-flash', fps = '1' } = req.body;
+
+  const modelConfig = MODEL_ALIASES[model];
+  if (!modelConfig) {
+    res.status(400).json({ error: `Unknown model: ${model}` });
+    return;
+  }
+
+  const jobId = uuidv4();
+
+  // Add to queue (processes one at a time)
+  enqueueJob({
+    jobId,
+    videoPath: file.path,
+    originalName: file.originalname,
+    modelConfig,
+    fps: parseFloat(fps) || 1,
+  });
+
+  res.json({
+    jobId,
+    filename: file.originalname,
+    path: file.path,
+  });
+});
+
+// GET /api/analyze/:jobId/progress - SSE progress stream for single video
+router.get('/analyze/:jobId/progress', (req: Request, res: Response) => {
+  const { jobId } = req.params;
+  const job = jobManager.getJob(jobId);
+
+  if (!job) {
+    res.status(404).json({ error: 'Job not found' });
+    return;
+  }
+
+  // Set up SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // If job already completed or failed, send that state immediately
+  if (job.status === 'completed') {
+    res.write(`event: complete\ndata: ${JSON.stringify({ result: job.result })}\n\n`);
+    res.end();
+    return;
+  }
+  if (job.status === 'failed') {
+    res.write(`event: error\ndata: ${JSON.stringify({ error: job.error })}\n\n`);
+    res.end();
+    return;
+  }
+
+  // Send current progress if available
+  if (job.progress) {
+    res.write(`event: progress\ndata: ${JSON.stringify(job.progress)}\n\n`);
+  }
+
+  // Listen for progress updates
+  const onProgress = (progress: { stage: string; percent: number; message: string }) => {
+    res.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`);
+  };
+
+  const onComplete = (result: unknown) => {
+    res.write(`event: complete\ndata: ${JSON.stringify({ result })}\n\n`);
+    cleanup();
+    res.end();
+  };
+
+  const onError = (error: string) => {
+    res.write(`event: error\ndata: ${JSON.stringify({ error })}\n\n`);
+    cleanup();
+    res.end();
+  };
+
+  const cleanup = () => {
+    jobManager.off(`progress:${jobId}`, onProgress);
+    jobManager.off(`complete:${jobId}`, onComplete);
+    jobManager.off(`error:${jobId}`, onError);
+  };
+
+  jobManager.on(`progress:${jobId}`, onProgress);
+  jobManager.on(`complete:${jobId}`, onComplete);
+  jobManager.on(`error:${jobId}`, onError);
+
+  // Handle client disconnect
+  req.on('close', cleanup);
+});
+
+// Background analysis function for single video
+async function analyzeVideoJob(
+  jobId: string,
+  videoPath: string,
+  originalName: string,
+  modelConfig: { model: string; provider: string },
+  fps: number
+): Promise<void> {
+  // Job already created by enqueueJob
+  const startTime = Date.now();
+
+  try {
+    const options: AnalyzeOptions = {
+      output: 'json',
+      extractFrames: join(__dirname, '../../frames'),
+      model: modelConfig.model,
+      verbose: false,
+      fps,
+      provider: modelConfig.provider as Provider,
+      onProgress: (stage, message) => {
+        // Map analyzer stages to job manager stages
+        const stageMap: Record<string, 'uploading' | 'processing' | 'analyzing' | 'extracting'> = {
+          'uploading': 'uploading',
+          'extracting-frames': 'processing',
+          'analyzing': 'analyzing',
+          'saving-frames': 'extracting',
+        };
+        jobManager.updateProgress(jobId, {
+          stage: stageMap[stage] || 'processing',
+          percent: 0,
+          message,
+        });
+      },
+    };
+
+    // analyzeVideoFile handles upload + AI analysis internally
+    const result = await analyzeVideoFile(videoPath, options);
+
+    // Store original filename for display, keep upload path for playback
+    result.video = originalName;
+    result.videoPath = `/uploads/${basename(videoPath)}`;
+
+    // Extract recording date from video metadata
+    const recordedAt = await getVideoRecordingDate(videoPath);
+    if (recordedAt) {
+      result.recordedAt = recordedAt;
+    }
+
+    // Auto-save to history
+    await saveAnalysis(result);
+
+    // Merge timing info (analyzeVideoFile may have set detailed timing)
+    const totalMs = Date.now() - startTime;
+    result.timing = {
+      ...result.timing,
+      analysisMs: result.timing?.analysisMs ?? 0,
+      totalMs,
+    };
+
+    jobManager.completeJob(jobId, result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Analysis failed';
+    jobManager.failJob(jobId, message);
+  }
+}
 
 // GET /api/videos - List videos in directory
 router.get('/videos', async (req: Request, res: Response) => {
@@ -192,69 +399,6 @@ router.post('/analyze', async (req: Request, res: Response) => {
     const message = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ error: message });
   }
-});
-
-// GET /api/analyze/:jobId/progress - SSE progress stream
-router.get('/analyze/:jobId/progress', (req: Request, res: Response) => {
-  const { jobId } = req.params;
-  const job = jobManager.getJob(jobId);
-
-  if (!job) {
-    res.status(404).json({ error: 'Job not found' });
-    return;
-  }
-
-  // Set up SSE
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-
-  // Send current state
-  if (job.progress) {
-    res.write(`event: progress\ndata: ${JSON.stringify(job.progress)}\n\n`);
-  }
-
-  if (job.status === 'completed') {
-    res.write(`event: complete\ndata: ${JSON.stringify({ jobId })}\n\n`);
-    res.end();
-    return;
-  }
-
-  if (job.status === 'failed') {
-    res.write(`event: error\ndata: ${JSON.stringify({ message: job.error })}\n\n`);
-    res.end();
-    return;
-  }
-
-  // Listen for updates
-  const onProgress = (progress: unknown) => {
-    res.write(`event: progress\ndata: ${JSON.stringify(progress)}\n\n`);
-  };
-
-  const onComplete = () => {
-    res.write(`event: complete\ndata: ${JSON.stringify({ jobId })}\n\n`);
-    cleanup();
-    res.end();
-  };
-
-  const onError = (message: string) => {
-    res.write(`event: error\ndata: ${JSON.stringify({ message })}\n\n`);
-    cleanup();
-    res.end();
-  };
-
-  const cleanup = () => {
-    jobManager.off(`progress:${jobId}`, onProgress);
-    jobManager.off(`complete:${jobId}`, onComplete);
-    jobManager.off(`error:${jobId}`, onError);
-  };
-
-  jobManager.on(`progress:${jobId}`, onProgress);
-  jobManager.on(`complete:${jobId}`, onComplete);
-  jobManager.on(`error:${jobId}`, onError);
-
-  // Cleanup on client disconnect
-  req.on('close', cleanup);
 });
 
 // GET /api/analyze/:jobId/result - Get completed result

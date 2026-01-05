@@ -34,6 +34,8 @@ export interface FishFinderResult {
 
 export type Provider = 'gemini' | 'openai';
 
+export type AnalysisStage = 'uploading' | 'extracting-frames' | 'analyzing' | 'saving-frames';
+
 export interface AnalyzeOptions {
   output: 'json' | 'text';
   extractFrames?: string;
@@ -41,6 +43,7 @@ export interface AnalyzeOptions {
   verbose: boolean;
   fps?: number;
   provider: Provider;
+  onProgress?: (stage: AnalysisStage, message: string) => void;
 }
 
 export interface GeminiAnalysisResponse {
