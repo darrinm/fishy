@@ -81,6 +81,24 @@ Add in **Configuration** → **Persistent Storage**:
 | fishy-data | /app/data | Analysis history, uploads |
 | fishy-frames | /app/frames | Extracted video frames |
 
+### Uploads and frames live on a separate disk
+
+The host's root disk is 75 GB and is shared with Coolify and Iris. Uploads
+(~58 GB) and frames (~14 GB) are on a separate Hetzner volume, `/dev/sdb`,
+mounted at `/mnt/fishy`. Two bind mounts in `/etc/fstab` place its
+subdirectories inside the Docker volumes, so the container sees ordinary
+volumes:
+
+```
+/dev/disk/by-id/scsi-0HC_Volume_104331552 /mnt/fishy ext4 discard,nofail,defaults 0 0
+/mnt/fishy/uploads /var/lib/docker/volumes/h4os4w8kkos8oc0gogwocg4k-fishy-data/_data/uploads none bind 0 0
+/mnt/fishy/frames /var/lib/docker/volumes/h4os4w8kkos8oc0gogwocg4k-fishy-frames/_data none bind 0 0
+```
+
+The volume names carry the Coolify resource id. If the app is recreated in
+Coolify with a new id, the fstab paths must change to match, or new files
+land on the root disk.
+
 ## Step 7: Enable Basic Authentication
 
 **Important**: Protects both UI and all API endpoints.
