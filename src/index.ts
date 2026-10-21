@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import 'dotenv/config';
+import './tls-distrust.js';
 import { Command } from 'commander';
 import { getVideoFiles } from './video.js';
 import { analyzeVideoFile } from './analyzer.js';

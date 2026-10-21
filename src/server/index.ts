@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import '../tls-distrust.js';
 import express from 'express';
 import cors from 'cors';
 import { join, dirname } from 'node:path';

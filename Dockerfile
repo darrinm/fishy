@@ -18,9 +18,13 @@ RUN npm run build
 # Production image
 FROM node:20-slim
 
-# Install ffmpeg for video processing
+# Install ffmpeg for video processing. ca-certificates is named so the build
+# takes the newest one, not the base image's: 20250419~deb12u2 distrusts the
+# compromised eMudhra intermediates (src/tls-distrust.ts covers Node).
 RUN apt-get update && apt-get install -y \
+    ca-certificates \
     ffmpeg \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge '20250419~deb12u2' \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
