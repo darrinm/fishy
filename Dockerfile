@@ -1,4 +1,4 @@
-FROM node:20-slim AS builder
+FROM node:24-slim AS builder
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ COPY src/ ./src/
 RUN npm run build
 
 # Production image
-FROM node:20-slim
+FROM node:24-slim
 
 # Install ffmpeg for video processing. ca-certificates is named so the build
 # takes the newest one, not the base image's: 20250419~deb12u2 distrusts the
